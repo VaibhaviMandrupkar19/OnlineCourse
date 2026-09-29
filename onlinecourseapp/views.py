@@ -1,110 +1,83 @@
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import get_object_or_404, render, redirect
+from django.http import HttpResponseRedirect
+from django.urls import reverse
 
-from .models import Course, Lesson, Submission
+from .models import Course, Lesson, Enrollment, Submission, Choice
 
 
-def exam(request, lesson_id):
-    lesson = get_object_or_404(Lesson, id=lesson_id)
-    questions = lesson.questions.all()
+def exam(request, course_id):
+    course = get_object_or_404(Course, id=course_id)
+    questions = course.question_set.all()
 
     return render(
         request,
         "exam.html",
         {
-            "lesson": lesson,
+            "course": course,
             "questions": questions,
         }
     )
 
 
-def submit(request, lesson_id):
-    lesson = get_object_or_404(Lesson, id=lesson_id)
-
-    if request.method == "POST":
-        Submission.objects.filter(
-            question__lesson=lesson
-        ).delete()
-
-        submissions = []
-
-        for question in lesson.questions.all():
-            selected_choice_id = request.POST.get(
-                f"question_{question.id}"
-            )
-
-            if selected_choice_id:
-                submission = Submission.objects.create(
-                    question=question,
-                    selected_choice_id=selected_choice_id,
-                    is_correct=False
-                )
-
-                submission.is_correct = (
-                    submission.selected_choice.is_correct
-                )
-                submission.save()
-
-                submissions.append(submission)
-
-        correct_answers = sum(
-            submission.is_correct
-            for submission in submissions
-        )
-
-        total_questions = lesson.questions.count()
-
-        score = (
-            (correct_answers / total_questions) * 100
-            if total_questions else 0
-        )
-
-        return render(
-            request,
-            "exam_result.html",
-            {
-                "lesson": lesson,
-                "submissions": submissions,
-                "score": score,
-                "correct_answers": correct_answers,
-                "total_questions": total_questions,
-            }
-        )
-
-    return render(
-        request,
-        "exam.html",
-        {
-            "lesson": lesson,
-            "questions": lesson.questions.all(),
-        }
-    )
-
-
-def show_exam_result(request, course_id):
+def submit(request, course_id):
     course = get_object_or_404(Course, id=course_id)
+    user = request.user
 
-    submissions = Submission.objects.filter(
-        question__lesson__course=course
+    enrollment = Enrollment.objects.get(
+        user=user,
+        course=course
     )
 
-    total_questions = submissions.count()
-    correct_answers = submissions.filter(
-        is_correct=True
-    ).count()
-
-    score = (
-        (correct_answers / total_questions) * 100
-        if total_questions else 0
+    submission = Submission.objects.create(
+        enrollment=enrollment
     )
+
+    selected_choices = []
+
+    for key in request.POST:
+        if key.startswith("choice"):
+            choice_id = request.POST[key]
+            selected_choices.append(int(choice_id))
+
+    choices = Choice.objects.filter(
+        id__in=selected_choices
+    )
+
+    submission.choices.set(choices)
+
+    return HttpResponseRedirect(
+        reverse(
+            "show_exam_result",
+            args=(course_id, submission.id)
+        )
+    )
+
+
+def show_exam_result(request, course_id, submission_id):
+    course = get_object_or_404(
+        Course,
+        id=course_id
+    )
+
+    submission = get_object_or_404(
+        Submission,
+        id=submission_id
+    )
+
+    choices = submission.choices.all()
+
+    total_score = 0
+
+    for choice in choices:
+        if choice.is_correct:
+            total_score += choice.question.grade
 
     return render(
         request,
         "exam_result.html",
         {
             "course": course,
-            "submissions": submissions,
-            "score": score,
-            "correct_answers": correct_answers,
-            "total_questions": total_questions,
+            "grade": total_score,
+            "choices": choices,
         }
     )
